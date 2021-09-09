@@ -1,7 +1,6 @@
 import * as core from '@actions/core';
 import { context } from '@actions/github';
 
-import * as github from './github-utils';
 import * as versionbot from './versionbot-utils';
 import * as balena from './balena-utils';
 import * as git from './git';
@@ -23,7 +22,10 @@ export async function run(): Promise<void> {
 
 	// If we are pushing directly to the target branch then just build a release without draft flag
 	if (context.eventName === 'push' && context.ref === `refs/heads/${target}`) {
-		releaseId = await balena.push(fleet, src, false);
+		releaseId = await balena.push(fleet, src, {
+			draft: false,
+			tags: [{ name: 'gh_workflow_id', value: context.sha }],
+		});
 		// Set the built releaseId in the output
 		core.setOutput('releaseId', releaseId);
 		return; // Done action!
@@ -42,12 +44,15 @@ export async function run(): Promise<void> {
 		context.payload.pull_request?.merged
 	) {
 		// Get all the previous releases built during this workflow
-		const previousReleases = await github.getReleases();
+		const releases = await balena.getReleasesByTag(
+			fleet,
+			'gh_workflow_id',
+			context.payload.pull_request?.head.sha,
+		);
 		// Finalize all the releases
-		for (const rId in previousReleases) {
-			if (!previousReleases[rId].finalized) {
-				await balena.finalize(rId);
-				await github.saveRelease({ id: rId, finalized: true });
+		for (const release of releases) {
+			if (!release.isFinal) {
+				await balena.finalize(release.id);
 			}
 		}
 		return; // Action is done!
@@ -66,9 +71,11 @@ export async function run(): Promise<void> {
 	}
 
 	// Now send the source to the builders which will build a draft
-	releaseId = await balena.push(fleet, src);
-	// Persist built release to workflow
-	await github.saveRelease({ id: releaseId, finalized: false });
+	releaseId = await balena.push(fleet, src, {
+		tags: [
+			{ name: 'gh_workflow_id', value: context.payload.pull_request?.head.sha },
+		],
+	});
 	// Set the built releaseId in the output
 	core.setOutput('releaseId', releaseId);
 	// Action is now done and will run again once we merge
